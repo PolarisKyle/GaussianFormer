@@ -487,6 +487,10 @@ class CustomDataset(Dataset):
 ```python
 # 在 dataset/transform_3d.py 中新增（或单独文件）
 
+import os
+import numpy as np
+import torch
+
 @OPENOCC_TRANSFORMS.register_module()
 class LoadOccupancyCustom(object):
     """
@@ -496,21 +500,22 @@ class LoadOccupancyCustom(object):
         pc_range: [x_min, y_min, z_min, x_max, y_max, z_max]
         grid_size: [X, Y, Z] 网格数
         voxel_size: float，体素边长
+        empty_label: int，空体素的标签值
     """
-    def __init__(self, pc_range, grid_size, voxel_size):
+    def __init__(self, pc_range, grid_size, voxel_size, empty_label=17):
         self.pc_range = pc_range
         self.grid_size = grid_size
         self.voxel_size = voxel_size
+        self.empty_label = empty_label
 
         # 预计算体素中心坐标
-        import torch as _torch
-        xxx = _torch.arange(grid_size[0], dtype=_torch.float32) * voxel_size + 0.5 * voxel_size + pc_range[0]
-        yyy = _torch.arange(grid_size[1], dtype=_torch.float32) * voxel_size + 0.5 * voxel_size + pc_range[1]
-        zzz = _torch.arange(grid_size[2], dtype=_torch.float32) * voxel_size + 0.5 * voxel_size + pc_range[2]
+        xxx = torch.arange(grid_size[0], dtype=torch.float32) * voxel_size + 0.5 * voxel_size + pc_range[0]
+        yyy = torch.arange(grid_size[1], dtype=torch.float32) * voxel_size + 0.5 * voxel_size + pc_range[1]
+        zzz = torch.arange(grid_size[2], dtype=torch.float32) * voxel_size + 0.5 * voxel_size + pc_range[2]
         xxx = xxx[:, None, None].expand(*grid_size)
         yyy = yyy[None, :, None].expand(*grid_size)
         zzz = zzz[None, None, :].expand(*grid_size)
-        self.xyz = _torch.stack([xxx, yyy, zzz], dim=-1).numpy()  # [X, Y, Z, 3]
+        self.xyz = torch.stack([xxx, yyy, zzz], dim=-1).numpy()  # [X, Y, Z, 3]
 
     def __call__(self, results):
         occ_path = results['occ_path']
@@ -908,7 +913,7 @@ model = dict(
         ),
         deformable_model=dict(
             kps_generator=dict(pc_range=pc_range),
-            num_cams=YOUR_NUM_CAMS,    # ⬅️ 改成你的相机数
+            num_cams=6,    # ⬅️ 改成你的相机数，例如 4 / 6 / 8
         ),
         spconv_layer=dict(
             pc_range=pc_range,
