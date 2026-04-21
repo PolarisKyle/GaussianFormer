@@ -203,20 +203,53 @@ class LTDataset(Dataset):
             }
 
         # ------------------------------------------------------------------
-        # 构建帧索引：以第一个相机目录中的有序文件列表为基准
+        # 构建帧索引：
+        #   图像文件名格式为 "frame-XXXXXX_<timestamp><ext>"，例如：
+        #     frame-000004_1768719984453.jpg
+        #   不同相机中 frame-XXXXXX 序号可能不同，但下划线后的时间戳在
+        #   所有相机间唯一对应同一帧，作为跨相机对齐的 key。
+        #
+        #   self.frame_ids       : 有序时间戳列表，如 ['1768719984453', ...]
+        #   self.cam_file_map    : {cam: {timestamp: full_stem}}
+        #                          用于在 __getitem__ 中按时间戳定位各相机文件名
         # ------------------------------------------------------------------
         ref_cam = self.cams[0]
         ref_img_dir = os.path.join(data_root, self.CAM_CONFIG[ref_cam][0])
         assert os.path.isdir(ref_img_dir), \
             f"参考相机图像目录不存在：{ref_img_dir}"
 
-        pattern = os.path.join(ref_img_dir, f'*{self.img_ext}')
-        self.frame_ids = sorted(
+        def _extract_timestamp(stem: str) -> str:
+            """从文件名主干（不含扩展名）提取时间戳部分（最后一个 '_' 之后的内容）。"""
+            parts = stem.rsplit('_', 1)
+            assert len(parts) == 2, \
+                f"无法从文件名 '{stem}' 中提取时间戳，期望格式：frame-XXXXXX_<timestamp>"
+            return parts[1]
+
+        # 以参考相机的文件为基准，建立有序时间戳列表
+        ref_pattern = os.path.join(ref_img_dir, f'*{self.img_ext}')
+        ref_stems = sorted(
             os.path.splitext(os.path.basename(p))[0]
-            for p in glob.glob(pattern)
+            for p in glob.glob(ref_pattern)
         )
-        assert len(self.frame_ids) > 0, \
+        assert len(ref_stems) > 0, \
             f"未在 {ref_img_dir} 中找到扩展名为 {self.img_ext} 的图像文件"
+
+        self.frame_ids: List[str] = [_extract_timestamp(s) for s in ref_stems]
+
+        # 为每个相机建立 timestamp → full_stem 的快速查找字典
+        self.cam_file_map: Dict[str, Dict[str, str]] = {}
+        for cam in self.cams:
+            img_dir, _ = self.CAM_CONFIG[cam]
+            cam_img_dir = os.path.join(data_root, img_dir)
+            assert os.path.isdir(cam_img_dir), \
+                f"相机 {cam} 的图像目录不存在：{cam_img_dir}"
+            cam_pattern = os.path.join(cam_img_dir, f'*{self.img_ext}')
+            ts_map: Dict[str, str] = {}
+            for p in glob.glob(cam_pattern):
+                stem = os.path.splitext(os.path.basename(p))[0]
+                ts = _extract_timestamp(stem)
+                ts_map[ts] = stem
+            self.cam_file_map[cam] = ts_map
 
     # ------------------------------------------------------------------
     # Dataset 协议方法
@@ -237,7 +270,7 @@ class LTDataset(Dataset):
                     已根据 Resize 缩放比例修正。
                 sensor2ego (torch.Tensor): shape (N, 4, 4)，
                     相机坐标系到车体坐标系的齐次变换矩阵。
-                frame_id (str): 当前帧的文件名（不含扩展名）。
+                frame_id (str): 当前帧的时间戳（文件名下划线后缀，如 '1768719984453'）。
         """
         assert 0 <= index < len(self), \
             f"索引越界：index={index}, 数据集长度={len(self)}"
@@ -251,8 +284,12 @@ class LTDataset(Dataset):
 
         for cam in self.cams:
             img_dir, _ = self.CAM_CONFIG[cam]
+            # 通过时间戳 frame_id 从预建的查找表中获取该相机的实际文件名主干
+            assert frame_id in self.cam_file_map[cam], \
+                f"相机 {cam} 中不存在时间戳为 {frame_id} 的图像文件"
+            actual_stem = self.cam_file_map[cam][frame_id]
             img_path = os.path.join(
-                self.data_root, img_dir, f'{frame_id}{self.img_ext}'
+                self.data_root, img_dir, f'{actual_stem}{self.img_ext}'
             )
             assert os.path.isfile(img_path), \
                 f"图像文件不存在：{img_path}"
