@@ -4,6 +4,7 @@ OPENOCC_DATAWRAPPER = Registry('openocc_datawrapper')
 OPENOCC_TRANSFORMS = Registry('openocc_transforms')
 
 from .dataset import NuScenesDataset
+from .lt_dataset import LTDataset
 from .transform_3d import *
 from .sampler import CustomDistributedSampler
 from .utils import custom_collate_fn_temporal
