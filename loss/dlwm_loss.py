@@ -158,8 +158,8 @@ class DLWMLoss(nn.Module):
         total = self.w_sparse * l_d + self.w_dense * l_pd + self.w_sem * l_sem
 
         loss_dict = {
-            'L_d':   l_d.detach().item(),
-            'L_pd':  l_pd.detach().item(),
-            'L_sem': l_sem.detach().item(),
+            'L_d':   l_d.detach().mean().item(),
+            'L_pd':  l_pd.detach().mean().item(),
+            'L_sem': l_sem.detach().mean().item(),
         }
         return total, loss_dict

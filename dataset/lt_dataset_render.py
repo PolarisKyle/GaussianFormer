@@ -128,10 +128,9 @@ class LTDatasetRender(LTDataset):
         else:
             arr = np.zeros((orig_h, orig_w), dtype=np.float32)
 
-        # bilinear 插值缩放（保持深度值物理意义）
+        # NEAREST 插值缩放：保证无效像素（0.0）不被双线性插值污染
         t = torch.from_numpy(arr)[None, None]  # [1, 1, H, W]
         t = TF.resize(t.squeeze(0), [target_h, target_w], interpolation=TF.InterpolationMode.NEAREST)
-        # NEAREST 插值保证无效像素（0.0）不被插值污染
         return t.float()  # [1, H, W]
 
     def _load_semantic_map(

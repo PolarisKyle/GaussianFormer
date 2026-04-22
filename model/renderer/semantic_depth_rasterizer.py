@@ -175,7 +175,8 @@ class SemanticDepthRasterizer(nn.Module):
 
         if backend == 'auto':
             try:
-                import gsplat  # noqa: F401
+                import gsplat
+                del gsplat  # 只用于检测是否安装，避免占用命名空间
                 self._backend = 'gsplat'
             except ImportError:
                 self._backend = 'pytorch'

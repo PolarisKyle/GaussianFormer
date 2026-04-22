@@ -90,10 +90,11 @@ class GaussianRenderHead(BaseTaskHead):
             return list(range(num_decoder))
         elif self.apply_loss_type == 'random':
             if self.random_apply_loss_layers > 1:
+                # 限制采样数量不超过可选层数，避免 np.random.choice 报错
+                n_candidates = num_decoder - 1
+                n_sample = min(self.random_apply_loss_layers - 1, n_candidates)
                 chosen = np.random.choice(
-                    num_decoder - 1,
-                    self.random_apply_loss_layers - 1,
-                    replace=False,
+                    n_candidates, n_sample, replace=False
                 ).tolist()
                 return chosen + [num_decoder - 1]
             return [num_decoder - 1]
