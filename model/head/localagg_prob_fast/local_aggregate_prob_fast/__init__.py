@@ -76,6 +76,14 @@ class _LocalAggregate(torch.autograd.Function):
         W = ctx.W
         D = ctx.D
         geomBuffer, binningBuffer, imgBuffer, means3D, pts, points_int, cov3D, opas, semantics, logits, bin_logits, density, probability = ctx.saved_tensors
+        if logits_grad.dim() != 2 or semantics.dim() != 2:
+            raise RuntimeError(
+                f'LocalAggregateProbFast backward expects 2D tensors, got logits_grad={tuple(logits_grad.shape)}, semantics={tuple(semantics.shape)}'
+            )
+        if logits_grad.shape[1] != semantics.shape[1]:
+            raise RuntimeError(
+                f'LocalAggregateProbFast channel mismatch before CUDA call: logits_grad C={logits_grad.shape[1]} vs semantics C={semantics.shape[1]}'
+            )
 
         # Restructure args as C++ method expects them
         args = (

@@ -19,6 +19,57 @@ warnings.filterwarnings("ignore")
 def pass_print(*args, **kwargs):
     pass
 
+
+def _to_uint8_image(img):
+    if isinstance(img, torch.Tensor):
+        img = img.detach().cpu().numpy()
+    img = np.asarray(img)
+    if img.dtype != np.uint8:
+        img = np.clip(img, 0, 255).astype(np.uint8)
+    return img
+
+
+def _save_ori_images(save_dir, i_iter_val, ori_imgs):
+    # Format A: tensor [B, H, W, C, N] (NuScenes pipeline)
+    if isinstance(ori_imgs, torch.Tensor):
+        if ori_imgs.ndim == 5 and ori_imgs.shape[3] == 3:
+            for i in range(ori_imgs.shape[-1]):
+                ori_img = ori_imgs[0, ..., i].cpu().numpy()
+                ori_img = _to_uint8_image(ori_img[..., [2, 1, 0]])
+                Image.fromarray(ori_img).save(os.path.join(save_dir, f'{i_iter_val}_image_{i}.png'))
+            return
+        if ori_imgs.ndim == 5 and ori_imgs.shape[-1] == 3:
+            for i in range(ori_imgs.shape[1]):
+                ori_img = _to_uint8_image(ori_imgs[0, i].cpu().numpy())
+                Image.fromarray(ori_img).save(os.path.join(save_dir, f'{i_iter_val}_image_{i}.png'))
+            return
+
+    # Format B: list with possibly different H/W per camera
+    if isinstance(ori_imgs, list):
+        for i, cam_img in enumerate(ori_imgs):
+            # DataLoader(batch=1) often gives [1, H, W, C] for each camera.
+            if isinstance(cam_img, torch.Tensor) and cam_img.ndim == 4 and cam_img.shape[0] == 1:
+                cam_img = cam_img[0]
+            cam_img = _to_uint8_image(cam_img)
+            # LTDataset stores BGR to stay compatible with existing visualization output.
+            cam_img = cam_img[..., [2, 1, 0]]
+            Image.fromarray(cam_img).save(os.path.join(save_dir, f'{i_iter_val}_image_{i}.png'))
+
+
+def _save_from_input_imgs(save_dir, i_iter_val, input_imgs):
+    imgs = input_imgs.detach().float().cpu()  # [B, N, C, H, W]
+    imgs = imgs[0]
+
+    mean = torch.tensor([0.485, 0.456, 0.406], dtype=imgs.dtype).view(1, 3, 1, 1)
+    std = torch.tensor([0.229, 0.224, 0.225], dtype=imgs.dtype).view(1, 3, 1, 1)
+    imgs = imgs * std + mean
+    imgs = imgs.clamp(0.0, 1.0)
+    imgs = (imgs * 255.0).to(torch.uint8)
+
+    for i in range(imgs.shape[0]):
+        img = imgs[i].permute(1, 2, 0).numpy()
+        Image.fromarray(img).save(os.path.join(save_dir, f'{i_iter_val}_image_{i}.png'))
+
 def main(local_rank, args):
     # global settings
     set_random_seed(args.seed)
@@ -131,13 +182,12 @@ def main(local_rank, args):
     print_freq = cfg.print_freq
     from misc.metric_util import MeanIoU
     miou_metric = MeanIoU(
-        list(range(1, 17)),
-        17, #17,
-        ['barrier', 'bicycle', 'bus', 'car', 'construction_vehicle',
-         'motorcycle', 'pedestrian', 'traffic_cone', 'trailer', 'truck',
-         'driveable_surface', 'other_flat', 'sidewalk', 'terrain', 'manmade',
-         'vegetation'],
-         True, 17, filter_minmax=False)
+           list(range(1, 16)),
+           0,
+           ['road', 'sidewalk', 'curb', 'cone', 'obstacle',
+            'tree_trunk', 'building', 'vehicle', 'pole_sign', 'vegetation',
+            'fence', 'two_wheeler', 'cyclist', 'pedestrian', 'noise'],
+            True, 0, filter_minmax=False)
     miou_metric.reset()
 
     my_model.eval()
@@ -165,12 +215,11 @@ def main(local_rank, args):
                 if isinstance(data[k], torch.Tensor):
                     data[k] = data[k].cuda()
             input_imgs = data.pop('img')
-            ori_imgs = data.pop('ori_img')
-            for i in range(ori_imgs.shape[-1]):
-                ori_img = ori_imgs[0, ..., i].cpu().numpy()
-                ori_img = ori_img[..., [2, 1, 0]]
-                ori_img = Image.fromarray(ori_img.astype(np.uint8))
-                ori_img.save(os.path.join(save_dir, f'{i_iter_val}_image_{i}.png'))
+            ori_imgs = data.pop('ori_img', None)
+            if ori_imgs is not None:
+                _save_ori_images(save_dir, i_iter_val, ori_imgs)
+            else:
+                _save_from_input_imgs(save_dir, i_iter_val, input_imgs)
             
             # breakpoint()
             result_dict = my_model(imgs=input_imgs, metas=data)
@@ -218,13 +267,15 @@ def main(local_rank, args):
 if __name__ == '__main__':
     # Training settings
     parser = argparse.ArgumentParser(description='')
-    parser.add_argument('--py-config', default='config/tpv_lidarseg.py')
-    parser.add_argument('--work-dir', type=str, default='./out/tpv_lidarseg')
-    parser.add_argument('--resume-from', type=str, default='')
+    parser.add_argument('--py-config', default='config/lt_gs.py')
+    parser.add_argument('--work-dir', type=str, \
+        default='/J6P-perception/advc/test/jf_online_occ_data/Exps/2042265419897131008/')
+    parser.add_argument('--resume-from', type=str, \
+        default='/J6P-perception/advc/test/jf_online_occ_data/Exps/2042265419897131008/epoch_20.pth')
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--vis-occ', action='store_true', default=False)
     parser.add_argument('--vis-gaussian', action='store_true', default=False)
-    parser.add_argument('--vis_gaussian_topdown', action='store_true', default=False)
+    parser.add_argument('--vis-gaussian-topdown', action='store_true', default=False)
     parser.add_argument('--vis-index', type=int, nargs='+', default=[])
     parser.add_argument('--num-samples', type=int, default=1)
     parser.add_argument('--vis_scene_index', type=int, default=-1)

@@ -67,8 +67,15 @@ def custom_collate_fn_temporal(instances):
                 torch.from_numpy(instance[k]) for instance in instances])
         elif isinstance(v, torch.Tensor):
             return_dict[k] = torch.stack([instance[k] for instance in instances])
+        elif isinstance(v, (list, tuple)):
+            if len(instances) == 1:
+                return_dict[k] = instances[0][k]
+            else:
+                return_dict[k] = [instance[k] for instance in instances]
         elif isinstance(v, (dict, str)):
             return_dict[k] = [instance[k] for instance in instances]
+        elif isinstance(v, (int, float)):
+            return_dict[k] = torch.tensor([instance[k] for instance in instances])
         elif v is None:
             return_dict[k] = [None] * len(instances)
         else:

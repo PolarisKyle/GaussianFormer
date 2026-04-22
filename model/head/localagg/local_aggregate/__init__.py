@@ -72,6 +72,14 @@ class _LocalAggregate(torch.autograd.Function):
         W = ctx.W
         D = ctx.D
         geomBuffer, binningBuffer, imgBuffer, means3D, pts, points_int, cov3D, opacities, semantics = ctx.saved_tensors
+        if out_grad.dim() != 2 or semantics.dim() != 2:
+            raise RuntimeError(
+                f'LocalAggregate backward expects 2D tensors, got out_grad={tuple(out_grad.shape)}, semantics={tuple(semantics.shape)}'
+            )
+        if out_grad.shape[1] != semantics.shape[1]:
+            raise RuntimeError(
+                f'LocalAggregate channel mismatch before CUDA call: out_grad C={out_grad.shape[1]} vs semantics C={semantics.shape[1]}'
+            )
 
         # Restructure args as C++ method expects them
         args = (

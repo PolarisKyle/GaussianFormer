@@ -110,21 +110,35 @@ class OccupancyLoss(BaseLoss):
             occ_mask = occ_mask.flatten(1)
             sampled_label = sampled_label[occ_mask][None]
 
+        valid_mask = sampled_label != 255
+        if valid_mask.any():
+            invalid_mask = (sampled_label < 0) | (sampled_label >= self.num_classes)
+            invalid_mask = invalid_mask & valid_mask
+            if invalid_mask.any():
+                invalid_values = torch.unique(sampled_label[invalid_mask]).detach().cpu().tolist()
+                raise RuntimeError(
+                    f"sampled_label contains out-of-range class ids {invalid_values} for num_classes={self.num_classes}. "
+                    f"Expected labels in [0, {self.num_classes - 1}] or ignore_index=255."
+                )
+
         for semantics in pred_occ:
             if occ_mask is not None:
                 semantics = semantics.transpose(1, 2)[occ_mask][None].transpose(1, 2) # 1, c, n
             loss_dict = {}
+            class_weights = self.class_weights.type_as(semantics)
+            if class_weights.numel() != semantics.shape[1]:
+                class_weights = None
             # semantics = semantics.transpose(0, 1).unsqueeze(0)
             if self.use_focal_loss:
                 loss_dict['loss_voxel_ce'] = self.loss_voxel_ce_weight * \
-                    self.focal_loss(semantics, sampled_label, sampled_xyz, self.class_weights.type_as(semantics), ignore_index=255)
+                    self.focal_loss(semantics, sampled_label, sampled_xyz, class_weights, ignore_index=255)
             else:
                 if self.lovasz_use_softmax:
                     loss_dict['loss_voxel_ce'] = self.loss_voxel_ce_weight * \
-                        CE_ssc_loss(semantics, sampled_label, self.class_weights.type_as(semantics), ignore_index=255)
+                        CE_ssc_loss(semantics, sampled_label, class_weights, ignore_index=255)
                 else:
                     loss_dict['loss_voxel_ce'] = self.loss_voxel_ce_weight * CE_wo_softmax(
-                        semantics, sampled_label, self.class_weights.type_as(semantics), ignore_index=255)
+                        semantics, sampled_label, class_weights, ignore_index=255)
             if self.use_sem_geo_scal_loss:
                 if self.lovasz_use_softmax:
                     scal_input = torch.softmax(semantics, dim=1)
@@ -166,6 +180,11 @@ def CE_ssc_loss(pred, target, class_weights=None, ignore_index=255):
     :param: prediction: the predicted tensor, must be [BS, C, ...]
     """
 
+    if target.ndim == pred.ndim:
+        target = target.squeeze(1)
+    if class_weights is not None and class_weights.numel() != pred.shape[1]:
+        class_weights = None
+
     criterion = nn.CrossEntropyLoss(
         weight=class_weights, ignore_index=ignore_index, reduction="mean"
     )
@@ -178,6 +197,11 @@ def CE_ssc_loss(pred, target, class_weights=None, ignore_index=255):
     return loss
 
 def CE_wo_softmax(pred, target, class_weights=None, ignore_index=255):
+    if target.ndim == pred.ndim:
+        target = target.squeeze(1)
+    if class_weights is not None and class_weights.numel() != pred.shape[1]:
+        class_weights = None
+
     pred = torch.clamp(pred, 1e-6, 1. - 1e-6)
     loss = F.nll_loss(torch.log(pred), target, class_weights, ignore_index=ignore_index)
     return loss

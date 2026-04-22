@@ -19,6 +19,74 @@ warnings.filterwarnings("ignore")
 def pass_print(*args, **kwargs):
     pass
 
+
+def run_projection_debug_check(dataset, logger, num_samples=2, num_points=256, seed=0):
+    if len(dataset) == 0:
+        logger.warning('[DEBUG][projection] dataset is empty, skip projection check.')
+        return
+
+    rng = np.random.default_rng(seed)
+    sample_count = min(num_samples, len(dataset))
+    sample_indices = rng.choice(len(dataset), size=sample_count, replace=False)
+
+    for sample_index in sample_indices.tolist():
+        sample = dataset[int(sample_index)]
+        projection_mat = sample.get('projection_mat')
+        image_wh = sample.get('image_wh')
+        occ_xyz = sample.get('occ_xyz')
+
+        if projection_mat is None or image_wh is None or occ_xyz is None:
+            logger.warning(
+                '[DEBUG][projection] sample %s is missing projection_mat/image_wh/occ_xyz, skip.',
+                sample_index,
+            )
+            continue
+
+        projection_mat = projection_mat.float().cpu()
+        image_wh = image_wh.float().cpu()
+        occ_xyz = occ_xyz.reshape(-1, 3).float().cpu()
+        if occ_xyz.numel() == 0:
+            logger.warning('[DEBUG][projection] sample %s has empty occ_xyz, skip.', sample_index)
+            continue
+
+        point_count = min(num_points, occ_xyz.shape[0])
+        point_indices = rng.choice(occ_xyz.shape[0], size=point_count, replace=False)
+        sampled_xyz = occ_xyz[point_indices]
+        sampled_xyz_homo = torch.cat(
+            [sampled_xyz, torch.ones_like(sampled_xyz[:, :1])], dim=-1
+        )
+
+        projected = projection_mat[:, None] @ sampled_xyz_homo[None, :, :, None]
+        projected = projected.squeeze(-1)
+        depth = projected[..., 2]
+        uv = projected[..., :2] / depth.unsqueeze(-1).clamp(min=1e-5)
+        valid = (
+            (depth > 1e-5)
+            & (uv[..., 0] >= 0)
+            & (uv[..., 0] < image_wh[:, None, 0])
+            & (uv[..., 1] >= 0)
+            & (uv[..., 1] < image_wh[:, None, 1])
+        )
+
+        valid_ratio = valid.float().mean(dim=1).numpy()
+        positive_depth_ratio = (depth > 1e-5).float().mean(dim=1).numpy()
+        frame_id = sample.get('frame_id', str(sample_index))
+        logger.info(
+            '[DEBUG][projection] frame=%s sample=%d num_cams=%d num_points=%d positive_depth_ratio=%s valid_ratio=%s',
+            frame_id,
+            sample_index,
+            projection_mat.shape[0],
+            point_count,
+            np.array2string(positive_depth_ratio, precision=3),
+            np.array2string(valid_ratio, precision=3),
+        )
+
+        if not bool(valid.any()):
+            logger.warning(
+                '[DEBUG][projection] frame=%s has zero valid projections across all sampled points and cameras.',
+                frame_id,
+            )
+
 def main(local_rank, args):
     # global settings
     set_random_seed(args.seed)
@@ -103,6 +171,15 @@ def main(local_rank, args):
         dist=distributed,
         iter_resume=args.iter_resume)
 
+    if local_rank == 0 and cfg.get('debug_projection_before_train', True):
+        run_projection_debug_check(
+            train_dataset_loader.dataset,
+            logger,
+            num_samples=cfg.get('debug_projection_num_samples', 2),
+            num_points=cfg.get('debug_projection_num_points', 256),
+            seed=args.seed,
+        )
+
     # get optimizer, loss, scheduler
     optimizer = build_optim_wrapper(my_model, cfg.optimizer)
     loss_func = OPENOCC_LOSS.build(cfg.loss).cuda()
@@ -173,13 +250,12 @@ def main(local_rank, args):
     grad_norm = 0
     from misc.metric_util import MeanIoU
     miou_metric = MeanIoU(
-        list(range(1, 17)),
-        17, #17,
-        ['barrier', 'bicycle', 'bus', 'car', 'construction_vehicle',
-         'motorcycle', 'pedestrian', 'traffic_cone', 'trailer', 'truck',
-         'driveable_surface', 'other_flat', 'sidewalk', 'terrain', 'manmade',
-         'vegetation'],
-         True, 17, filter_minmax=False)
+           list(range(1, 16)),
+           0,
+           ['road', 'sidewalk', 'curb', 'cone', 'obstacle',
+            'tree_trunk', 'building', 'vehicle', 'pole_sign', 'vegetation',
+            'fence', 'two_wheeler', 'cyclist', 'pedestrian', 'noise'],
+            True, 0, filter_minmax=False)
     miou_metric.reset()
 
     while epoch < max_num_epochs:
@@ -338,13 +414,13 @@ def main(local_rank, args):
 if __name__ == '__main__':
     # Training settings
     parser = argparse.ArgumentParser(description='')
-    parser.add_argument('--py-config', default='config/tpv_lidarseg.py')
-    parser.add_argument('--work-dir', type=str, default='./out/tpv_lidarseg')
+    parser.add_argument('--py-config', default='config/lt_gs.py')
+    parser.add_argument('--work-dir', type=str, default='/J6P-perception/advc/test/jf_online_occ_data/Exps/debug/')
     parser.add_argument('--resume-from', type=str, default='')
     parser.add_argument('--iter-resume', action='store_true', default=False)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--gradient-accumulation', type=int, default=1)
-    parser.add_argument('--dataset', type=str, default='nuscenes')
+    parser.add_argument('--dataset', type=str, default='LTDataset')
     args = parser.parse_args()
     
     ngpus = torch.cuda.device_count()

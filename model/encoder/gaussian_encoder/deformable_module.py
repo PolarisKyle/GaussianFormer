@@ -172,8 +172,9 @@ class DeformableFeatureAggregation(BaseModule):
             temp_anchor_embeds[::-1] + [anchor_embed],
         ):
             weights, weight_mask = self._get_weights(
-                instance_feature, temp_anchor_embed, metas
+                instance_feature, temp_anchor_embed, temp_metas
             )
+            num_cams = int(temp_metas["projection_mat"].shape[1])
             if self.use_deformable_func:
                 weights = (
                     weights.permute(0, 1, 4, 2, 3, 5)
@@ -182,7 +183,7 @@ class DeformableFeatureAggregation(BaseModule):
                         bs,
                         num_anchor,
                         self.num_pts,
-                        self.num_cams,
+                        num_cams,
                         self.num_levels,
                         self.num_groups,
                     )
@@ -194,7 +195,7 @@ class DeformableFeatureAggregation(BaseModule):
                         bs,
                         num_anchor,
                         self.num_pts,
-                        self.num_cams,
+                        num_cams,
                         self.num_levels,
                         self.num_groups,
                     )
@@ -205,17 +206,17 @@ class DeformableFeatureAggregation(BaseModule):
                     temp_metas.get("image_wh"),
                 )
                 points_2d = points_2d.permute(0, 2, 3, 1, 4).reshape(
-                    bs, num_anchor * self.num_pts, self.num_cams, 2)
+                    bs, num_anchor * self.num_pts, num_cams, 2)
                 mask = mask.permute(0, 2, 3, 1)
                 mask = mask[..., None, None] & weight_mask
                 all_miss = mask.sum(dim=[2, 3, 4], keepdim=True) == 0
-                all_miss = all_miss.expand(-1, -1, self.num_pts, self.num_cams, self.num_levels, -1)
+                all_miss = all_miss.expand(-1, -1, self.num_pts, num_cams, self.num_levels, -1)
                 weights[~mask] = - torch.inf
                 weights[all_miss] = 0.
                 weights = weights.flatten(2, 4).softmax(dim=-2).reshape(
                     bs,
                     num_anchor * self.num_pts,
-                    self.num_cams,
+                    num_cams,
                     self.num_levels,
                     self.num_groups)
                 # weights_clone = weights.detach().clone()
@@ -249,14 +250,18 @@ class DeformableFeatureAggregation(BaseModule):
 
     def _get_weights(self, instance_feature, anchor_embed, metas=None):
         bs, num_anchor = instance_feature.shape[:2]
+        num_cams = int(metas["projection_mat"].shape[1])
         feature = instance_feature + anchor_embed
         if self.camera_encoder is not None:
             camera_embed = self.camera_encoder(
-                metas["projection_mat"][:, :, :3].reshape(
-                    bs, self.num_cams, -1
-                )
+                metas["projection_mat"][:, :, :3, :4].reshape(bs, num_cams, 12)
             )
             feature = feature[:, :, None] + camera_embed[:, None]
+        elif num_cams != self.num_cams:
+            raise ValueError(
+                f"num_cams mismatch when use_camera_embed=False: "
+                f"metas has {num_cams}, module is configured with {self.num_cams}"
+            )
         weights = (
             self.weights_fc(feature)
             .reshape(bs, num_anchor, -1, self.num_groups)
@@ -264,7 +269,7 @@ class DeformableFeatureAggregation(BaseModule):
             .reshape(
                 bs,
                 num_anchor,
-                self.num_cams,
+                num_cams,
                 self.num_levels,
                 self.num_pts,
                 self.num_groups,
