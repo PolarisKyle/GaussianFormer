@@ -112,6 +112,8 @@ class SparseGaussian3DRefinementModule(BaseModule):
             semantics = semantics.softmax(dim=-1)
         elif self.semantics_activation == 'softplus':
             semantics = F.softplus(semantics)
+        elif self.semantics_activation in ('none', 'linear', None):
+            pass  # 保留原始 logits，用于渲染分支（渲染后再接 Softmax）
         
         gaussian = GaussianPrediction(
             means=xyz,

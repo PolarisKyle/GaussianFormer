@@ -5,6 +5,7 @@ OPENOCC_TRANSFORMS = Registry('openocc_transforms')
 
 from .dataset import NuScenesDataset
 from .lt_dataset import LTDataset
+from .lt_dataset_render import LTDatasetRender
 from .transform_3d import *
 from .sampler import CustomDistributedSampler
 from .utils import custom_collate_fn_temporal
