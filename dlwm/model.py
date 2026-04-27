@@ -107,6 +107,10 @@ class ImageFeatureExtractor(nn.Module):
     ) -> None:
         super().__init__()
         self.img_backbone_out_indices = img_backbone_out_indices
+        if any(idx < 0 for idx in self.img_backbone_out_indices):
+            raise ValueError(
+                f"img_backbone_out_indices must be non-negative, got {self.img_backbone_out_indices}"
+            )
 
         if img_backbone_config is None:
             img_backbone_config = dict(
@@ -159,11 +163,10 @@ class ImageFeatureExtractor(nn.Module):
         state_dict = ckpt.get('state_dict', ckpt)
 
         model_state = {}
-        has_img_prefix = False
-        for key in state_dict.keys():
-            if key.startswith('img_backbone.') or key.startswith('img_neck.'):
-                has_img_prefix = True
-                break
+        has_img_prefix = any(
+            key.startswith(('img_backbone.', 'img_neck.'))
+            for key in state_dict.keys()
+        )
         if has_img_prefix:
             for key, value in state_dict.items():
                 if key.startswith('img_backbone.') or key.startswith('img_neck.'):
@@ -179,7 +182,12 @@ class ImageFeatureExtractor(nn.Module):
                     "No backbone/neck-prefixed keys found in checkpoint; trying backbone-only load.",
                     RuntimeWarning,
                 )
-                self.img_backbone.load_state_dict(state_dict, strict=False)
+                load_result = self.img_backbone.load_state_dict(state_dict, strict=False)
+                if len(load_result.missing_keys) > 0 and len(load_result.unexpected_keys) > 0:
+                    warnings.warn(
+                        "Backbone-only checkpoint load has missing/unexpected keys; verify checkpoint compatibility.",
+                        RuntimeWarning,
+                    )
                 return
 
         self.load_state_dict(model_state, strict=False)
