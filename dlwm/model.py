@@ -28,6 +28,7 @@ from __future__ import annotations
 import math
 import os
 import copy
+import warnings
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
@@ -138,7 +139,11 @@ class ImageFeatureExtractor(nn.Module):
         self.img_backbone = mmseg_builder.build_backbone(copy.deepcopy(img_backbone_config))
         try:
             self.img_neck = mmseg_builder.build_neck(copy.deepcopy(img_neck_config))
-        except Exception:
+        except Exception as exc:
+            warnings.warn(
+                f"mmseg neck build failed, falling back to mmdet3d MODELS.build: {exc}",
+                RuntimeWarning,
+            )
             self.img_neck = MMDET3D_MODELS.build(copy.deepcopy(img_neck_config))
 
         if pretrained and pretrained_path:
@@ -146,6 +151,10 @@ class ImageFeatureExtractor(nn.Module):
 
     def _load_pretrained(self, pretrained_path: str) -> None:
         if not os.path.isfile(pretrained_path):
+            warnings.warn(
+                f"Pretrained weights not found at '{pretrained_path}', continue with random init.",
+                RuntimeWarning,
+            )
             return
 
         ckpt = torch.load(pretrained_path, map_location='cpu')
@@ -808,7 +817,7 @@ class DLWMModel(nn.Module):
         fpn_out_ch:   int = 128,
         num_levels:   int = 4,
         pretrained:   bool = True,
-        img_backbone_out_indices: List[int] = (0, 1, 2, 3),
+        img_backbone_out_indices: Tuple[int, ...] = (0, 1, 2, 3),
         img_backbone_config: Optional[Dict] = None,
         img_neck_config: Optional[Dict] = None,
         img_pretrained_path: str = "ckpts/r101_dcn_fcos3d_pretrain.pth",
