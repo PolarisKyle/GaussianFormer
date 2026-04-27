@@ -100,7 +100,7 @@ class ImageFeatureExtractor(nn.Module):
         out_channels: int = 128,
         num_levels:   int = 4,
         pretrained:   bool = True,
-        img_backbone_out_indices: Optional[List[int]] = None,
+        img_backbone_out_indices: Optional[Tuple[int, ...]] = None,
         img_backbone_config: Optional[Dict] = None,
         img_neck_config: Optional[Dict] = None,
         pretrained_path: str = "ckpts/r101_dcn_fcos3d_pretrain.pth",
@@ -139,7 +139,7 @@ class ImageFeatureExtractor(nn.Module):
         self.img_backbone = mmseg_builder.build_backbone(copy.deepcopy(img_backbone_config))
         try:
             self.img_neck = mmseg_builder.build_neck(copy.deepcopy(img_neck_config))
-        except Exception as exc:
+        except (KeyError, TypeError, AttributeError, ValueError) as exc:
             warnings.warn(
                 f"mmseg neck build failed, falling back to mmdet3d MODELS.build: {exc}",
                 RuntimeWarning,
@@ -833,7 +833,7 @@ class DLWMModel(nn.Module):
             out_channels=fpn_out_ch,
             num_levels=num_levels,
             pretrained=pretrained,
-            img_backbone_out_indices=list(img_backbone_out_indices),
+            img_backbone_out_indices=img_backbone_out_indices,
             img_backbone_config=img_backbone_config,
             img_neck_config=img_neck_config,
             pretrained_path=img_pretrained_path,
