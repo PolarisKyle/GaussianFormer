@@ -159,12 +159,15 @@ class ImageFeatureExtractor(nn.Module):
         state_dict = ckpt.get('state_dict', ckpt)
 
         model_state = {}
-        has_img_prefix = False
-        for key, value in state_dict.items():
-            if key.startswith('img_backbone.') or key.startswith('img_neck.'):
-                has_img_prefix = True
-                model_state[key] = value
-        if not has_img_prefix:
+        has_img_prefix = any(
+            key.startswith('img_backbone.') or key.startswith('img_neck.')
+            for key in state_dict.keys()
+        )
+        if has_img_prefix:
+            for key, value in state_dict.items():
+                if key.startswith('img_backbone.') or key.startswith('img_neck.'):
+                    model_state[key] = value
+        else:
             for key, value in state_dict.items():
                 if key.startswith('backbone.'):
                     model_state[f'img_backbone.{key[len("backbone."):]}'] = value
@@ -189,7 +192,7 @@ class ImageFeatureExtractor(nn.Module):
             img_feats_backbone = list(img_feats_backbone.values())
 
         max_idx = max(self.img_backbone_out_indices)
-        if len(img_feats_backbone) <= max_idx:
+        if max_idx >= len(img_feats_backbone):
             raise IndexError(
                 f"img_backbone_out_indices={self.img_backbone_out_indices} out of range "
                 f"for backbone outputs with length {len(img_feats_backbone)}"
