@@ -159,10 +159,11 @@ class ImageFeatureExtractor(nn.Module):
         state_dict = ckpt.get('state_dict', ckpt)
 
         model_state = {}
-        has_img_prefix = any(
-            key.startswith('img_backbone.') or key.startswith('img_neck.')
-            for key in state_dict.keys()
-        )
+        has_img_prefix = False
+        for key in state_dict.keys():
+            if key.startswith('img_backbone.') or key.startswith('img_neck.'):
+                has_img_prefix = True
+                break
         if has_img_prefix:
             for key, value in state_dict.items():
                 if key.startswith('img_backbone.') or key.startswith('img_neck.'):
@@ -174,6 +175,10 @@ class ImageFeatureExtractor(nn.Module):
                 elif key.startswith('neck.'):
                     model_state[f'img_neck.{key[len("neck."):]}'] = value
             if not model_state:
+                warnings.warn(
+                    "No backbone/neck-prefixed keys found in checkpoint; trying backbone-only load.",
+                    RuntimeWarning,
+                )
                 self.img_backbone.load_state_dict(state_dict, strict=False)
                 return
 
@@ -191,10 +196,13 @@ class ImageFeatureExtractor(nn.Module):
         if isinstance(img_feats_backbone, dict):
             img_feats_backbone = list(img_feats_backbone.values())
 
-        max_idx = max(self.img_backbone_out_indices)
-        if max_idx >= len(img_feats_backbone):
+        invalid_indices = [
+            idx for idx in self.img_backbone_out_indices
+            if idx < 0 or idx >= len(img_feats_backbone)
+        ]
+        if invalid_indices:
             raise IndexError(
-                f"img_backbone_out_indices={self.img_backbone_out_indices} out of range "
+                f"img_backbone_out_indices has invalid indices {invalid_indices} "
                 f"for backbone outputs with length {len(img_feats_backbone)}"
             )
 
