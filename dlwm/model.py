@@ -100,15 +100,13 @@ class ImageFeatureExtractor(nn.Module):
         out_channels: int = 128,
         num_levels:   int = 4,
         pretrained:   bool = True,
-        img_backbone_out_indices: Optional[Tuple[int, ...]] = None,
+        img_backbone_out_indices: Tuple[int, ...] = (0, 1, 2, 3),
         img_backbone_config: Optional[Dict] = None,
         img_neck_config: Optional[Dict] = None,
         pretrained_path: str = "ckpts/r101_dcn_fcos3d_pretrain.pth",
     ) -> None:
         super().__init__()
-        self.img_backbone_out_indices = (
-            img_backbone_out_indices if img_backbone_out_indices is not None else [0, 1, 2, 3]
-        )
+        self.img_backbone_out_indices = img_backbone_out_indices
 
         if img_backbone_config is None:
             img_backbone_config = dict(
@@ -189,6 +187,13 @@ class ImageFeatureExtractor(nn.Module):
         img_feats_backbone = self.img_backbone(imgs)
         if isinstance(img_feats_backbone, dict):
             img_feats_backbone = list(img_feats_backbone.values())
+
+        max_idx = max(self.img_backbone_out_indices)
+        if len(img_feats_backbone) <= max_idx:
+            raise IndexError(
+                f"img_backbone_out_indices={self.img_backbone_out_indices} out of range "
+                f"for backbone outputs with length {len(img_feats_backbone)}"
+            )
 
         img_feats = [img_feats_backbone[idx] for idx in self.img_backbone_out_indices]
         img_feats = self.img_neck(img_feats)
