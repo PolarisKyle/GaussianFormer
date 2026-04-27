@@ -26,14 +26,16 @@ DLWM (arXiv:2604.00969) 一阶段复现 —— 模型与渲染逻辑
 from __future__ import annotations
 
 import math
+import os
+import copy
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchvision.models import resnet101, ResNet101_Weights
-from torchvision.ops import FeaturePyramidNetwork
+from mmseg.models import builder as mmseg_builder
+from mmdet3d.registry import MODELS as MMDET3D_MODELS
 
 
 # ===========================================================================
@@ -85,65 +87,87 @@ class Camera:
 # ===========================================================================
 
 class ImageFeatureExtractor(nn.Module):
-    """ResNet-101 Backbone + FPN Neck，输出多尺度特征图。
+    """使用 GaussianFormer 的 backbone/neck 组件提取多尺度特征。
 
     输入 ：[B*N, 3, H, W]  — B*N 张图像（批次×相机数）
     输出 ：List[Tensor]    — 多尺度特征，形状均为 [B*N, C_out, H_i, W_i]
-           按 (H/8, H/16, H/32, H/64) 四级
+           默认按 (H/4, H/8, H/16, H/32) 或配置指定层级
     """
-
-    # ResNet-101 各阶段输出通道数
-    _BACKBONE_CHANNELS = [256, 512, 1024, 2048]
 
     def __init__(
         self,
         out_channels: int = 128,
         num_levels:   int = 4,
         pretrained:   bool = True,
+        img_backbone_out_indices: Optional[List[int]] = None,
+        img_backbone_config: Optional[Dict] = None,
+        img_neck_config: Optional[Dict] = None,
+        pretrained_path: str = "ckpts/r101_dcn_fcos3d_pretrain.pth",
     ) -> None:
         super().__init__()
-        self.num_levels   = num_levels
-        self.out_channels = out_channels
-
-        # ── ResNet-101 Backbone ──────────────────────────────────────
-        weights = ResNet101_Weights.IMAGENET1K_V2 if pretrained else None
-        backbone = resnet101(weights=weights)
-
-        # 保留 stem（conv1 + bn1 + relu + maxpool）和四个 stage
-        self.stem   = nn.Sequential(
-            backbone.conv1, backbone.bn1, backbone.relu, backbone.maxpool
+        self.img_backbone_out_indices = (
+            img_backbone_out_indices if img_backbone_out_indices is not None else [0, 1, 2, 3]
         )
-        self.layer1 = backbone.layer1   # → stride 4,  C=256
-        self.layer2 = backbone.layer2   # → stride 8,  C=512
-        self.layer3 = backbone.layer3   # → stride 16, C=1024
-        self.layer4 = backbone.layer4   # → stride 32, C=2048
 
-        # ── FPN Neck ─────────────────────────────────────────────────
-        # 只接受 layer2~layer4（3 级），再向上外推 1 级
-        fpn_in_channels = self._BACKBONE_CHANNELS[1:]      # [512, 1024, 2048]
-        self.fpn = FeaturePyramidNetwork(
-            in_channels_list=fpn_in_channels,
-            out_channels=out_channels,
-            extra_blocks=None,
-        )
-        # 额外一级：P6 = stride 64（conv 下采样 P5）
-        if num_levels >= 4:
-            self.extra_conv = nn.Sequential(
-                nn.Conv2d(out_channels, out_channels, 3, stride=2, padding=1),
-                nn.ReLU(inplace=True),
+        if img_backbone_config is None:
+            img_backbone_config = dict(
+                _delete_=True,
+                type='ResNet',
+                depth=101,
+                num_stages=4,
+                out_indices=(0, 1, 2, 3),
+                frozen_stages=1,
+                norm_cfg=dict(type='BN2d', requires_grad=False),
+                norm_eval=True,
+                style='caffe',
+                with_cp=True,
+                dcn=dict(type='DCNv2', deform_groups=1, fallback_on_stride=False),
+                stage_with_dcn=(False, False, True, True),
+            )
+        if img_neck_config is None:
+            img_neck_config = dict(
+                type='FPN',
+                num_outs=num_levels,
+                start_level=1,
+                out_channels=out_channels,
+                add_extra_convs='on_output',
+                relu_before_extra_convs=True,
+                in_channels=[256, 512, 1024, 2048],
             )
 
-        self._init_weights()
+        self.img_backbone = mmseg_builder.build_backbone(copy.deepcopy(img_backbone_config))
+        try:
+            self.img_neck = mmseg_builder.build_neck(copy.deepcopy(img_neck_config))
+        except Exception:
+            self.img_neck = MMDET3D_MODELS.build(copy.deepcopy(img_neck_config))
 
-    def _init_weights(self) -> None:
-        for m in [self.fpn, getattr(self, 'extra_conv', None)]:
-            if m is None:
-                continue
-            for mod in m.modules():
-                if isinstance(mod, nn.Conv2d):
-                    nn.init.kaiming_normal_(mod.weight, mode='fan_out', nonlinearity='relu')
-                    if mod.bias is not None:
-                        nn.init.zeros_(mod.bias)
+        if pretrained and pretrained_path:
+            self._load_pretrained(pretrained_path)
+
+    def _load_pretrained(self, pretrained_path: str) -> None:
+        if not os.path.isfile(pretrained_path):
+            return
+
+        ckpt = torch.load(pretrained_path, map_location='cpu')
+        state_dict = ckpt.get('state_dict', ckpt)
+
+        model_state = {}
+        has_img_prefix = False
+        for key, value in state_dict.items():
+            if key.startswith('img_backbone.') or key.startswith('img_neck.'):
+                has_img_prefix = True
+                model_state[key] = value
+        if not has_img_prefix:
+            for key, value in state_dict.items():
+                if key.startswith('backbone.'):
+                    model_state[f'img_backbone.{key[len("backbone."):]}'] = value
+                elif key.startswith('neck.'):
+                    model_state[f'img_neck.{key[len("neck."):]}'] = value
+            if not model_state:
+                self.img_backbone.load_state_dict(state_dict, strict=False)
+                return
+
+        self.load_state_dict(model_state, strict=False)
 
     def forward(self, imgs: torch.Tensor) -> List[torch.Tensor]:
         """
@@ -151,31 +175,24 @@ class ImageFeatureExtractor(nn.Module):
             imgs: [B*N, 3, H, W]
 
         Returns:
-            feats: List of 3 or 4 tensors, each [B*N, out_channels, H_i, W_i]
-                   索引 0 = 最大分辨率（stride 8），索引 3 = 最小（stride 64）
+            feats: List[tensor], each [B*N, C, H_i, W_i]
         """
-        # Backbone 前向
-        x  = self.stem(imgs)        # [B*N, 64,   H/4, W/4]
-        c2 = self.layer1(x)         # [B*N, 256,  H/4, W/4]
-        c3 = self.layer2(c2)        # [B*N, 512,  H/8, W/8]
-        c4 = self.layer3(c3)        # [B*N, 1024, H/16, W/16]
-        c5 = self.layer4(c4)        # [B*N, 2048, H/32, W/32]
+        img_feats_backbone = self.img_backbone(imgs)
+        if isinstance(img_feats_backbone, dict):
+            img_feats_backbone = list(img_feats_backbone.values())
 
-        # FPN：输入字典（torchvision FPN 接受 OrderedDict 或普通 dict）
-        fpn_input: Dict[str, torch.Tensor] = {
-            '0': c3,    # stride 8
-            '1': c4,    # stride 16
-            '2': c5,    # stride 32
-        }
-        fpn_out = self.fpn(fpn_input)   # OrderedDict: '0','1','2'
+        img_feats = [img_feats_backbone[idx] for idx in self.img_backbone_out_indices]
+        img_feats = self.img_neck(img_feats)
 
-        feats = [fpn_out['0'], fpn_out['1'], fpn_out['2']]   # P3, P4, P5
+        if isinstance(img_feats, dict):
+            if 'fpn_out' in img_feats:
+                img_feats = img_feats['fpn_out']
+            else:
+                img_feats = list(img_feats.values())
+        elif isinstance(img_feats, tuple):
+            img_feats = list(img_feats)
 
-        if self.num_levels >= 4:
-            p6 = self.extra_conv(fpn_out['2'])  # [B*N, C, H/64, W/64]
-            feats.append(p6)
-
-        return feats  # List[[B*N, C, H_i, W_i]]  len = num_levels
+        return img_feats
 
 
 # ===========================================================================
@@ -772,7 +789,11 @@ class DLWMModel(nn.Module):
         num_cams:       相机数量
         fpn_out_ch:     FPN 输出通道数
         num_levels:     FPN 层数
-        pretrained:     是否使用 ImageNet 预训练 ResNet-101
+        pretrained:     是否加载图像主干预训练权重
+        img_backbone_out_indices: backbone 输出层索引
+        img_backbone_config:      覆盖默认 backbone 配置
+        img_neck_config:          覆盖默认 neck 配置
+        img_pretrained_path:      backbone/neck 预训练权重路径
     """
 
     def __init__(
@@ -787,6 +808,10 @@ class DLWMModel(nn.Module):
         fpn_out_ch:   int = 128,
         num_levels:   int = 4,
         pretrained:   bool = True,
+        img_backbone_out_indices: List[int] = (0, 1, 2, 3),
+        img_backbone_config: Optional[Dict] = None,
+        img_neck_config: Optional[Dict] = None,
+        img_pretrained_path: str = "ckpts/r101_dcn_fcos3d_pretrain.pth",
     ) -> None:
         super().__init__()
         self.num_classes = num_classes
@@ -799,6 +824,10 @@ class DLWMModel(nn.Module):
             out_channels=fpn_out_ch,
             num_levels=num_levels,
             pretrained=pretrained,
+            img_backbone_out_indices=list(img_backbone_out_indices),
+            img_backbone_config=img_backbone_config,
+            img_neck_config=img_neck_config,
+            pretrained_path=img_pretrained_path,
         )
 
         # ── Gaussian 初始化 ────────────────────────────────────────────
