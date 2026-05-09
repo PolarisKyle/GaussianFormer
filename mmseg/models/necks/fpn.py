@@ -60,7 +60,7 @@ class FPN(nn.Module):
         if self.num_outs > len(outs):
             for i in range(self.num_outs - len(outs)):
                 if not self.add_extra_convs:
-                    outs.append(F.max_pool2d(outs[-1], kernel_size=1, stride=2))
+                    outs.append(F.max_pool2d(outs[-1], kernel_size=2, stride=2))
                 else:
                     src = outs[-1]
                     if self.relu_before_extra_convs:

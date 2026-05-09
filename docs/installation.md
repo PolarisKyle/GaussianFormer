@@ -12,8 +12,8 @@ conda activate selfocc
 pip install torch==2.0.0 torchvision==0.15.1 torchaudio==2.0.1 --index-url https://download.pytorch.org/whl/cu118
 ```
 
-## 3. MMLab 依赖说明
-项目已内置 mmcv / mmengine / mmdet / mmdet3d / mmseg 的最小兼容实现，不再需要安装 MMLab 相关包。
+## 3. MMLab dependency note
+This repository now includes in-project minimal compatibility implementations for mmcv / mmengine / mmdet / mmdet3d / mmseg, so installing external MMLab packages is no longer required.
 
 ## 4. Install other packages
 ```bash

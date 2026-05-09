@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import warnings
 
 from mmseg.registry import MODELS
 
@@ -49,8 +50,8 @@ class ResNet(nn.Module):
                 sd = torch.load(pretrained, map_location='cpu')
                 sd = sd.get('state_dict', sd)
                 self.load_state_dict(sd, strict=False)
-            except Exception:
-                pass
+            except (FileNotFoundError, RuntimeError, KeyError) as e:
+                warnings.warn(f'Failed to load pretrained weights from {pretrained}: {e}')
 
         self._freeze_stages()
 

@@ -65,8 +65,11 @@ def _to_plain_dict(value):
 
 
 def _load_py_vars(filename):
+    if not filename.endswith('.py'):
+        raise ValueError('Only .py config files are supported.')
     cfg_globals = {'__file__': filename}
     with open(filename, 'r', encoding='utf-8') as f:
+        # NOTE: Python config execution is intended only for trusted local config files.
         code = compile(f.read(), filename, 'exec')
         exec(code, cfg_globals)
     cfg = {}
