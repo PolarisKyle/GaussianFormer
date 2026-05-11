@@ -428,9 +428,24 @@ if __name__ == '__main__':
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--gradient-accumulation', type=int, default=1)
     parser.add_argument('--dataset', type=str, default='LTDataset')
-    parser.add_argument('--batch-size', type=int, default=None)
-    parser.add_argument('--train-batch-size', type=int, default=None)
-    parser.add_argument('--val-batch-size', type=int, default=None)
+    parser.add_argument(
+        '--batch-size',
+        type=int,
+        default=None,
+        help='Set both train/val dataloader batch_size. Overridden by --train-batch-size/--val-batch-size.',
+    )
+    parser.add_argument(
+        '--train-batch-size',
+        type=int,
+        default=None,
+        help='Set train dataloader batch_size (higher priority than --batch-size).',
+    )
+    parser.add_argument(
+        '--val-batch-size',
+        type=int,
+        default=None,
+        help='Set val dataloader batch_size (higher priority than --batch-size).',
+    )
     args = parser.parse_args()
 
     for arg_name in ['batch_size', 'train_batch_size', 'val_batch_size']:
