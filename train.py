@@ -106,10 +106,15 @@ def main(local_rank, args):
     def _set_loader_batch_size(loader_key, batch_size, arg_name):
         loader_cfg = cfg.get(loader_key, None)
         if loader_cfg is None or not isinstance(loader_cfg, MutableMapping):
-            raise KeyError(
+            raise ValueError(
                 f'Config must define "{loader_key}" as a dict when using --{arg_name}'
             )
         loader_cfg['batch_size'] = batch_size
+    if local_rank == 0 and args.batch_size is not None:
+        if args.train_batch_size is not None:
+            print('[WARN] --train-batch-size overrides --batch-size for train_loader.')
+        if args.val_batch_size is not None:
+            print('[WARN] --val-batch-size overrides --batch-size for val_loader.')
     if args.batch_size is not None:
         _set_loader_batch_size('train_loader', args.batch_size, 'batch-size')
         _set_loader_batch_size('val_loader', args.batch_size, 'batch-size')
