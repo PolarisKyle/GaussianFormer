@@ -19,6 +19,12 @@ warnings.filterwarnings("ignore")
 def pass_print(*args, **kwargs):
     pass
 
+def positive_int(value):
+    ivalue = int(value)
+    if ivalue < 1:
+        raise argparse.ArgumentTypeError('must be at least 1')
+    return ivalue
+
 
 def run_projection_debug_check(dataset, logger, num_samples=2, num_points=256, seed=0):
     if len(dataset) == 0:
@@ -96,13 +102,20 @@ def main(local_rank, args):
     # load config
     cfg = Config.fromfile(args.py_config)
     cfg.work_dir = args.work_dir
+    def _set_loader_batch_size(loader_key, batch_size, arg_name):
+        loader_cfg = cfg.get(loader_key, None)
+        if not isinstance(loader_cfg, dict):
+            raise KeyError(
+                f'Config must define "{loader_key}" as a dict when using --{arg_name}'
+            )
+        loader_cfg['batch_size'] = batch_size
     if args.batch_size is not None:
-        cfg.train_loader['batch_size'] = args.batch_size
-        cfg.val_loader['batch_size'] = args.batch_size
+        _set_loader_batch_size('train_loader', args.batch_size, 'batch-size')
+        _set_loader_batch_size('val_loader', args.batch_size, 'batch-size')
     if args.train_batch_size is not None:
-        cfg.train_loader['batch_size'] = args.train_batch_size
+        _set_loader_batch_size('train_loader', args.train_batch_size, 'train-batch-size')
     if args.val_batch_size is not None:
-        cfg.val_loader['batch_size'] = args.val_batch_size
+        _set_loader_batch_size('val_loader', args.val_batch_size, 'val-batch-size')
 
     # init DDP
     if args.gpus > 1:
@@ -430,28 +443,23 @@ if __name__ == '__main__':
     parser.add_argument('--dataset', type=str, default='LTDataset')
     parser.add_argument(
         '--batch-size',
-        type=int,
+        type=positive_int,
         default=None,
         help='Set both train/val dataloader batch_size. Overridden by --train-batch-size/--val-batch-size.',
     )
     parser.add_argument(
         '--train-batch-size',
-        type=int,
+        type=positive_int,
         default=None,
         help='Set train dataloader batch_size (higher priority than --batch-size).',
     )
     parser.add_argument(
         '--val-batch-size',
-        type=int,
+        type=positive_int,
         default=None,
         help='Set val dataloader batch_size (higher priority than --batch-size).',
     )
     args = parser.parse_args()
-
-    for arg_name in ['batch_size', 'train_batch_size', 'val_batch_size']:
-        arg_val = getattr(args, arg_name)
-        if arg_val is not None and arg_val < 1:
-            raise ValueError(f'--{arg_name.replace("_", "-")} must be at least 1')
     
     ngpus = torch.cuda.device_count()
     args.gpus = ngpus
