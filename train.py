@@ -2,6 +2,7 @@ import time, argparse, os.path as osp, os
 import torch, numpy as np
 import torch.distributed as dist
 from copy import deepcopy
+from collections.abc import MutableMapping
 
 import mmcv
 from mmengine import Config
@@ -22,7 +23,7 @@ def pass_print(*args, **kwargs):
 def positive_int(value):
     ivalue = int(value)
     if ivalue < 1:
-        raise argparse.ArgumentTypeError('must be at least 1')
+        raise argparse.ArgumentTypeError('Batch size must be at least 1')
     return ivalue
 
 
@@ -104,7 +105,7 @@ def main(local_rank, args):
     cfg.work_dir = args.work_dir
     def _set_loader_batch_size(loader_key, batch_size, arg_name):
         loader_cfg = cfg.get(loader_key, None)
-        if not isinstance(loader_cfg, dict):
+        if loader_cfg is None or not isinstance(loader_cfg, MutableMapping):
             raise KeyError(
                 f'Config must define "{loader_key}" as a dict when using --{arg_name}'
             )
