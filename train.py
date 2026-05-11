@@ -96,6 +96,13 @@ def main(local_rank, args):
     # load config
     cfg = Config.fromfile(args.py_config)
     cfg.work_dir = args.work_dir
+    if args.batch_size is not None:
+        cfg.train_loader['batch_size'] = args.batch_size
+        cfg.val_loader['batch_size'] = args.batch_size
+    if args.train_batch_size is not None:
+        cfg.train_loader['batch_size'] = args.train_batch_size
+    if args.val_batch_size is not None:
+        cfg.val_loader['batch_size'] = args.val_batch_size
 
     # init DDP
     if args.gpus > 1:
@@ -421,7 +428,15 @@ if __name__ == '__main__':
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--gradient-accumulation', type=int, default=1)
     parser.add_argument('--dataset', type=str, default='LTDataset')
+    parser.add_argument('--batch-size', type=int, default=None)
+    parser.add_argument('--train-batch-size', type=int, default=None)
+    parser.add_argument('--val-batch-size', type=int, default=None)
     args = parser.parse_args()
+
+    for arg_name in ['batch_size', 'train_batch_size', 'val_batch_size']:
+        arg_val = getattr(args, arg_name)
+        if arg_val is not None and arg_val < 1:
+            raise ValueError(f'--{arg_name.replace("_", "-")} must be >= 1')
     
     ngpus = torch.cuda.device_count()
     args.gpus = ngpus
