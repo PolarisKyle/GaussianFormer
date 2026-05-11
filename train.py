@@ -20,7 +20,7 @@ warnings.filterwarnings("ignore")
 def pass_print(*args, **kwargs):
     pass
 
-def positive_int(value):
+def positive_batch_size(value):
     ivalue = int(value)
     if ivalue < 1:
         raise argparse.ArgumentTypeError('Batch size must be at least 1')
@@ -110,11 +110,6 @@ def main(local_rank, args):
                 f'Config must define "{loader_key}" as a dict when using --{arg_name}'
             )
         loader_cfg['batch_size'] = batch_size
-    if local_rank == 0 and args.batch_size is not None:
-        if args.train_batch_size is not None:
-            print('[WARN] --train-batch-size overrides --batch-size for train_loader.')
-        if args.val_batch_size is not None:
-            print('[WARN] --val-batch-size overrides --batch-size for val_loader.')
     if args.batch_size is not None:
         _set_loader_batch_size('train_loader', args.batch_size, 'batch-size')
         _set_loader_batch_size('val_loader', args.batch_size, 'batch-size')
@@ -158,6 +153,11 @@ def main(local_rank, args):
     log_file = osp.join(args.work_dir, f'{timestamp}.log')
     logger = MMLogger('selfocc', log_file=log_file)
     MMLogger._instance_dict['selfocc'] = logger
+    if local_rank == 0 and args.batch_size is not None:
+        if args.train_batch_size is not None:
+            logger.warning('--train-batch-size overrides --batch-size for train_loader.')
+        if args.val_batch_size is not None:
+            logger.warning('--val-batch-size overrides --batch-size for val_loader.')
     logger.info(f'Config:\n{cfg.pretty_text}')
 
     # build model
@@ -449,19 +449,19 @@ if __name__ == '__main__':
     parser.add_argument('--dataset', type=str, default='LTDataset')
     parser.add_argument(
         '--batch-size',
-        type=positive_int,
+        type=positive_batch_size,
         default=None,
         help='Set both train/val dataloader batch_size. Overridden by --train-batch-size/--val-batch-size.',
     )
     parser.add_argument(
         '--train-batch-size',
-        type=positive_int,
+        type=positive_batch_size,
         default=None,
         help='Set train dataloader batch_size (higher priority than --batch-size).',
     )
     parser.add_argument(
         '--val-batch-size',
-        type=positive_int,
+        type=positive_batch_size,
         default=None,
         help='Set val dataloader batch_size (higher priority than --batch-size).',
     )
