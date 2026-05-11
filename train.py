@@ -451,7 +451,7 @@ if __name__ == '__main__':
     for arg_name in ['batch_size', 'train_batch_size', 'val_batch_size']:
         arg_val = getattr(args, arg_name)
         if arg_val is not None and arg_val < 1:
-            raise ValueError(f'--{arg_name.replace("_", "-")} must be >= 1')
+            raise ValueError(f'--{arg_name.replace("_", "-")} must be at least 1')
     
     ngpus = torch.cuda.device_count()
     args.gpus = ngpus
