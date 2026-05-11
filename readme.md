@@ -122,6 +122,8 @@ python eval.py --py-config config/xxxx.py --work-dir out/xxxx/ --resume-from out
 Download the pretrained weights for the image backbone [HERE](https://github.com/zhiqi-li/storage/releases/download/v1.0/r101_dcn_fcos3d_pretrain.pth) and put it inside ckpts.
 ```bash
 python train.py --py-config config/xxxx.py --work-dir out/xxxx
+# multi-batch rendering training
+python train.py --py-config config/xxxx.py --work-dir out/xxxx --batch-size 2
 ```
 
 Stay tuned for more exciting work and models!🤗
