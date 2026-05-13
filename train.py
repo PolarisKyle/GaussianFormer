@@ -87,6 +87,39 @@ def run_projection_debug_check(dataset, logger, num_samples=2, num_points=256, s
                 frame_id,
             )
 
+def init_distributed(local_rank, args):
+    env_world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    if env_world_size > 1:
+        # torchrun / 多机多卡推荐模式
+        distributed = True
+        local_rank = int(os.environ.get("LOCAL_RANK", local_rank))
+        torch.cuda.set_device(local_rank)
+        if not dist.is_initialized():
+            dist.init_process_group(backend="nccl", init_method="env://")
+        world_size = dist.get_world_size()
+        rank = dist.get_rank()
+    elif args.gpus > 1:
+        # 单机多卡（脚本内部 spawn）
+        distributed = True
+        local_rank = int(local_rank)
+        rank = local_rank
+        world_size = args.gpus
+        ip = os.environ.get("MASTER_ADDR", "127.0.0.1")
+        port = os.environ.get("MASTER_PORT", "20507")
+        if not dist.is_initialized():
+            dist.init_process_group(
+                backend="nccl",
+                init_method=f"tcp://{ip}:{port}",
+                world_size=world_size,
+                rank=rank,
+            )
+        torch.cuda.set_device(local_rank)
+    else:
+        distributed = False
+        world_size = 1
+        rank = 0
+    return distributed, world_size, rank, local_rank
+
 def main(local_rank, args):
     # global settings
     set_random_seed(args.seed)
@@ -97,30 +130,14 @@ def main(local_rank, args):
     cfg = Config.fromfile(args.py_config)
     cfg.work_dir = args.work_dir
 
-    # init DDP
-    if args.gpus > 1:
-        distributed = True
-        ip = os.environ.get("MASTER_ADDR", "127.0.0.1")
-        port = os.environ.get("MASTER_PORT", "20507")
-        hosts = int(os.environ.get("WORLD_SIZE", 1))  # number of nodes
-        rank = int(os.environ.get("RANK", 0))  # node id
-        gpus = torch.cuda.device_count()  # gpus per node
-        print(f"tcp://{ip}:{port}")
-        dist.init_process_group(
-            backend="nccl", init_method=f"tcp://{ip}:{port}", 
-            world_size=hosts * gpus, rank=rank * gpus + local_rank)
-        world_size = dist.get_world_size()
+    distributed, world_size, rank, local_rank = init_distributed(local_rank, args)
+    if distributed:
         cfg.gpu_ids = range(world_size)
-        torch.cuda.set_device(local_rank)
-
-        if local_rank != 0:
-            import builtins
-            builtins.print = pass_print
-    else:
-        distributed = False
-        world_size = 1
+    if rank != 0:
+        import builtins
+        builtins.print = pass_print
     
-    if local_rank == 0:
+    if rank == 0:
         os.makedirs(args.work_dir, exist_ok=True)
         cfg.dump(osp.join(args.work_dir, osp.basename(args.py_config)))
         from misc.tb_wrapper import WrappedTBWriter
@@ -171,7 +188,7 @@ def main(local_rank, args):
         dist=distributed,
         iter_resume=args.iter_resume)
 
-    if local_rank == 0 and cfg.get('debug_projection_before_train', True):
+    if rank == 0 and cfg.get('debug_projection_before_train', True):
         run_projection_debug_check(
             train_dataset_loader.dataset,
             logger,
@@ -310,7 +327,7 @@ def main(local_rank, args):
             time_e = time.time()
 
             global_iter += 1
-            if i_iter % print_freq == 0 and local_rank == 0:
+            if i_iter % print_freq == 0 and rank == 0:
                 lr = max([p['lr'] for p in optimizer.param_groups])
                 # lr = optimizer.param_groups[0]['lr']
                 logger.info('[TRAIN] Epoch %d Iter %5d/%d: Loss: %.3f (%.3f), grad_norm: %.3f, lr: %.7f, time: %.3f (%.3f)'%(
@@ -327,7 +344,7 @@ def main(local_rank, args):
             time_s = time.time()
 
             if args.iter_resume:
-                if (i_iter + 1) % 50 == 0 and local_rank == 0:
+                if (i_iter + 1) % 50 == 0 and rank == 0:
                     dict_to_save = {
                         'state_dict': raw_model.state_dict(),
                         'optimizer': optimizer.state_dict(),
@@ -343,7 +360,7 @@ def main(local_rank, args):
                     logger.info(f'iter ckpt {i_iter + 1} saved!')
         
         # save checkpoint
-        if local_rank == 0:
+        if rank == 0:
             dict_to_save = {
                 'state_dict': raw_model.state_dict(),
                 'optimizer': optimizer.state_dict(),
@@ -393,7 +410,7 @@ def main(local_rank, args):
                         miou_metric._after_step(pred_occ, gt_occ, occ_mask)
                 
                 val_loss_list.append(loss.detach().cpu().numpy())
-                if i_iter_val % print_freq == 0 and local_rank == 0:
+                if i_iter_val % print_freq == 0 and rank == 0:
                     logger.info('[EVAL] Epoch %d Iter %5d: Loss: %.3f (%.3f)'%(
                         epoch, i_iter_val, loss.item(), np.mean(val_loss_list)))
                     detailed_loss = []
@@ -409,6 +426,8 @@ def main(local_rank, args):
     
     if writer is not None:
         writer.close()
+    if distributed and dist.is_initialized():
+        dist.destroy_process_group()
         
 
 if __name__ == '__main__':
@@ -425,9 +444,14 @@ if __name__ == '__main__':
     
     ngpus = torch.cuda.device_count()
     args.gpus = ngpus
-    print(args)
+    env_world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    use_torchrun = env_world_size > 1 and "LOCAL_RANK" in os.environ
+    if (not use_torchrun) or int(os.environ.get("RANK", "0")) == 0:
+        print(args)
 
-    if ngpus > 1:
+    if use_torchrun:
+        main(int(os.environ.get("LOCAL_RANK", "0")), args)
+    elif ngpus > 1:
         torch.multiprocessing.spawn(main, args=(args,), nprocs=args.gpus)
     else:
         main(0, args)

@@ -197,6 +197,8 @@ _base_target_size = (512, 1408)  # (H, W)
 train_dataset_config = dict(
     type='LTDatasetRender',
     data_root='/path/to/lt_dataset/train',      # TODO: 替换为实际路径
+    # 若需同时训练多个数据根目录，改为：
+    # data_roots_txt='/path/to/train_roots.txt',  # txt 每行一个数据根目录
     target_size=_base_target_size,
     img_ext='.jpg',
     occ_dir='OCC_GT_NPZ',
@@ -213,6 +215,8 @@ train_dataset_config = dict(
 val_dataset_config = dict(
     type='LTDatasetRender',
     data_root='/path/to/lt_dataset/val',        # TODO: 替换为实际路径
+    # 若需同时验证多个数据根目录，改为：
+    # data_roots_txt='/path/to/val_roots.txt',    # txt 每行一个数据根目录
     target_size=_base_target_size,
     img_ext='.jpg',
     occ_dir='OCC_GT_NPZ',

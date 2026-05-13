@@ -141,7 +141,8 @@ class LTDataset(Dataset):
 
     def __init__(
         self,
-        data_root: str,
+        data_root: Optional[str] = None,
+        data_roots_txt: Optional[str] = None,
         target_size: tuple = (512, 1408),
         img_ext: str = '.jpg',
         occ_dir: str = 'OCC_GT_NPZ',
@@ -150,40 +151,109 @@ class LTDataset(Dataset):
         end_timestep: Optional[int] = -1,
         **kwargs,
     ):
-        assert os.path.isdir(data_root), f"数据集根目录不存在：{data_root}"
         assert len(target_size) == 2, f"target_size 应为 (H, W)，实际为 {target_size}"
         assert start_timestep >= 0, f"start_timestep 必须 >= 0，实际为 {start_timestep}"
         assert isinstance(occ_dir, str) and occ_dir, f"occ_dir 必须是非空字符串，实际为 {occ_dir}"
 
-        self.data_root = data_root
+        self.data_roots = self._resolve_data_roots(data_root, data_roots_txt)
+        self.data_root = self.data_roots[0]
         self.target_size = tuple(target_size)
         self.img_ext = img_ext
         self.occ_dir = occ_dir
         self.phase = phase
         self.extra_kwargs = kwargs
 
-        self.cams = [
+        self.root_records = []
+        for root in self.data_roots:
+            cams = self._discover_cams(root)
+            self.root_records.append(
+                dict(
+                    data_root=root,
+                    cams=cams,
+                    calibs=self._load_all_calibs(root, cams),
+                    cam_samples=self._build_camera_samples(root, cams),
+                )
+            )
+
+        base_cams = self.root_records[0]['cams']
+        for root_record in self.root_records[1:]:
+            assert root_record['cams'] == base_cams, (
+                "多数据根目录的相机目录集合不一致，无法进行统一批处理。"
+                f"\n基准目录({self.data_root}): {base_cams}"
+                f"\n当前目录({root_record['data_root']}): {root_record['cams']}"
+            )
+        self.cams = base_cams
+        self.calibs = self.root_records[0]['calibs']
+        self.cam_samples = self.root_records[0]['cam_samples']
+
+        self.data_infos = []
+        for root_index, root_record in enumerate(self.root_records):
+            root_data_infos = self._build_data_infos_for_root(
+                root_record,
+                start_timestep=start_timestep,
+                end_timestep=end_timestep,
+            )
+            for data_info in root_data_infos:
+                data_info['root_index'] = root_index
+            self.data_infos.extend(root_data_infos)
+        assert self.data_infos, "未构建到任何样本，请检查 data_root / data_roots_txt 配置。"
+
+    @staticmethod
+    def _resolve_data_roots(
+        data_root: Optional[str],
+        data_roots_txt: Optional[str],
+    ) -> List[str]:
+        has_root = bool(data_root)
+        has_txt = bool(data_roots_txt)
+        assert has_root ^ has_txt, "data_root 与 data_roots_txt 必须且只能指定一个。"
+
+        if has_root:
+            roots = [os.path.abspath(data_root)]
+        else:
+            txt_path = os.path.abspath(data_roots_txt)
+            assert os.path.isfile(txt_path), f"数据路径列表文件不存在：{txt_path}"
+            txt_dir = os.path.dirname(txt_path)
+            roots = []
+            with open(txt_path, 'r', encoding='utf-8') as file:
+                for line in file:
+                    path = line.strip()
+                    if not path or path.startswith('#'):
+                        continue
+                    if not os.path.isabs(path):
+                        path = os.path.abspath(os.path.join(txt_dir, path))
+                    roots.append(path)
+            assert roots, f"数据路径列表文件为空或无有效路径：{txt_path}"
+
+        dedup_roots = []
+        visited = set()
+        for root in roots:
+            root = os.path.abspath(root)
+            if root in visited:
+                continue
+            visited.add(root)
+            dedup_roots.append(root)
+
+        for root in dedup_roots:
+            assert os.path.isdir(root), f"数据集根目录不存在：{root}"
+        return dedup_roots
+
+    def _discover_cams(self, data_root: str) -> List[str]:
+        cams = [
             folder_name for folder_name in self.SENSOR_TO_PCO_NAME
-            if os.path.isdir(os.path.join(self.data_root, folder_name))
+            if os.path.isdir(os.path.join(data_root, folder_name))
         ]
-        assert self.cams, (
-            f"在 {self.data_root} 下未找到任何已配置相机目录，"
+        assert cams, (
+            f"在 {data_root} 下未找到任何已配置相机目录，"
             f"支持目录：{list(self.SENSOR_TO_PCO_NAME.keys())}"
         )
+        return cams
 
-        self.calibs = self._load_all_calibs()
-        self.cam_samples = self._build_camera_samples()
-        self.data_infos = self._build_data_infos(
-            start_timestep=start_timestep,
-            end_timestep=end_timestep,
-        )
-
-    def _load_all_calibs(self) -> Dict[str, dict]:
-        calib_dir = os.path.join(self.data_root, 'calib_param')
+    def _load_all_calibs(self, data_root: str, cams: List[str]) -> Dict[str, dict]:
+        calib_dir = os.path.join(data_root, 'calib_param')
         assert os.path.isdir(calib_dir), f"标定参数目录不存在：{calib_dir}"
 
         calibs: Dict[str, dict] = {}
-        for cam in self.cams:
+        for cam in cams:
             pco_name = self.SENSOR_TO_PCO_NAME[cam]
             yaml_path = self._resolve_calib_yaml_path(calib_dir, pco_name)
             cam_dict = _load_calib_yaml(yaml_path)
@@ -201,10 +271,10 @@ class LTDataset(Dataset):
             }
         return calibs
 
-    def _build_camera_samples(self) -> Dict[str, dict]:
+    def _build_camera_samples(self, data_root: str, cams: List[str]) -> Dict[str, dict]:
         cam_samples: Dict[str, dict] = {}
-        for cam in self.cams:
-            cam_dir = os.path.join(self.data_root, cam)
+        for cam in cams:
+            cam_dir = os.path.join(data_root, cam)
             image_paths = sorted(glob.glob(os.path.join(cam_dir, f'*{self.img_ext}')))
             assert image_paths, f"相机 {cam} 目录下未找到扩展名为 {self.img_ext} 的图像文件"
 
@@ -221,14 +291,18 @@ class LTDataset(Dataset):
             }
         return cam_samples
 
-    def _build_data_infos(
+    def _build_data_infos_for_root(
         self,
+        root_record: dict,
         start_timestep: int,
         end_timestep: Optional[int],
     ) -> List[dict]:
+        data_root = root_record['data_root']
+        cams = root_record['cams']
+        cam_samples = root_record['cam_samples']
         occ_dir = self.occ_dir
         if not os.path.isabs(occ_dir):
-            occ_dir = os.path.join(self.data_root, occ_dir)
+            occ_dir = os.path.join(data_root, occ_dir)
         assert os.path.isdir(occ_dir), f"OCC_GT_NPZ 目录不存在：{occ_dir}"
 
         occ_paths = sorted(glob.glob(os.path.join(occ_dir, '*_occ.npz')))
@@ -247,11 +321,11 @@ class LTDataset(Dataset):
             camera_paths: Dict[str, str] = {}
             time_diffs_ms: Dict[str, int] = {}
 
-            for cam in self.cams:
-                cam_timestamps_ms = self.cam_samples[cam]['timestamps_ms']
+            for cam in cams:
+                cam_timestamps_ms = cam_samples[cam]['timestamps_ms']
                 diffs = np.abs(cam_timestamps_ms - lidar_ts_ms)
                 nearest_idx = int(np.argmin(diffs))
-                camera_paths[cam] = self.cam_samples[cam]['paths'][nearest_idx]
+                camera_paths[cam] = cam_samples[cam]['paths'][nearest_idx]
                 time_diffs_ms[cam] = int(diffs[nearest_idx])
 
             data_infos.append({
@@ -309,6 +383,9 @@ class LTDataset(Dataset):
         assert 0 <= index < len(self), f"索引越界：index={index}, 数据集长度={len(self)}"
 
         info = self.data_infos[index]
+        root_record = self.root_records[info['root_index']]
+        cams = root_record['cams']
+        calibs = root_record['calibs']
         target_h, target_w = self.target_size
 
         with np.load(info['occ_path']) as occ_data:
@@ -326,7 +403,7 @@ class LTDataset(Dataset):
         focal_positions_list = []
         focal_depth = 0.0055
 
-        for cam in self.cams:
+        for cam in cams:
             img_path = info['camera_paths'][cam]
             assert os.path.isfile(img_path), f"图像文件不存在：{img_path}"
 
@@ -334,7 +411,7 @@ class LTDataset(Dataset):
                 pil_img = raw_img.convert('RGB')
                 orig_w, orig_h = pil_img.size
 
-            pil_img = self._undistort_image(pil_img, cam)
+            pil_img = self._undistort_image(pil_img, cam, calibs)
             # Keep an undistorted original image for visualization.
             ori_imgs_list.append(np.asarray(pil_img)[..., ::-1].copy())
             pil_img = TF.resize(pil_img, [target_h, target_w])
@@ -346,14 +423,14 @@ class LTDataset(Dataset):
             scale_w = target_w / orig_w
             scale_h = target_h / orig_h
 
-            intrinsic = self.calibs[cam]['K'].copy()
+            intrinsic = calibs[cam]['K'].copy()
             intrinsic[0, 0] *= scale_w
             intrinsic[0, 2] *= scale_w
             intrinsic[1, 1] *= scale_h
             intrinsic[1, 2] *= scale_h
             intrinsics_list.append(torch.from_numpy(intrinsic).float())
 
-            cam2ego = self.calibs[cam]['cam2ego']
+            cam2ego = calibs[cam]['cam2ego']
             cam2ego_list.append(torch.from_numpy(cam2ego).float())
 
             ego2cam = np.linalg.inv(cam2ego)
@@ -377,7 +454,7 @@ class LTDataset(Dataset):
         cam_positions = torch.stack(cam_positions_list, dim=0)
         focal_positions = torch.stack(focal_positions_list, dim=0)
 
-        num_cams = len(self.cams)
+        num_cams = len(cams)
         assert imgs.shape == (num_cams, 3, target_h, target_w), f"imgs 形状异常：{imgs.shape}"
         assert intrinsics.shape == (num_cams, 4, 4), f"intrinsics 形状异常：{intrinsics.shape}"
         assert cam2ego.shape == (num_cams, 4, 4), f"cam2ego 形状异常：{cam2ego.shape}"
@@ -394,15 +471,22 @@ class LTDataset(Dataset):
             'occ_xyz': occ_xyz,
             'occ_label': occ_label,
             'occ_cam_mask': occ_cam_mask,
-            'frame_id': str(info['lidar_timestamp_ns']),
+            'frame_id': f"{os.path.basename(root_record['data_root'])}:{info['lidar_timestamp_ns']}",
             'lidar_timestamp_ns': info['lidar_timestamp_ns'],
             'lidar_timestamp_ms': info['lidar_timestamp_ms'],
             'time_diffs_ms': info['time_diffs_ms'],
         }
 
-    def _undistort_image(self, pil_img: Image.Image, cam: str) -> Image.Image:
+    def _undistort_image(
+        self,
+        pil_img: Image.Image,
+        cam: str,
+        calibs: Optional[Dict[str, dict]] = None,
+    ) -> Image.Image:
         """根据 yml 中的 intrinsic + distorted 参数进行去畸变。"""
-        calib = self.calibs[cam]
+        if calibs is None:
+            calibs = self.calibs
+        calib = calibs[cam]
         distortion = calib['D']
         if distortion.size == 0 or not np.any(distortion != 0):
             return pil_img
