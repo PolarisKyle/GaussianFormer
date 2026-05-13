@@ -63,7 +63,8 @@ class LTDatasetRender(LTDataset):
 
     def __init__(
         self,
-        data_root: str,
+        data_root: Optional[str] = None,
+        data_roots_txt: Optional[str] = None,
         target_size: tuple = (512, 1408),
         sparse_depth_dir: str = 'SPARSE_DEPTH',
         dense_depth_dir: str = 'DENSE_DEPTH',
@@ -74,23 +75,36 @@ class LTDatasetRender(LTDataset):
         **kwargs,
     ):
         # 先调用父类初始化（包含标定、相机样本、数据索引构建）
-        super().__init__(data_root=data_root, target_size=target_size, **kwargs)
+        super().__init__(
+            data_root=data_root,
+            data_roots_txt=data_roots_txt,
+            target_size=target_size,
+            **kwargs,
+        )
 
         self.num_classes = num_classes
         self.empty_label = empty_label
         self.use_target_views = use_target_views
 
-        # 解析监督数据目录（支持相对路径和绝对路径）
-        self.sparse_depth_dir = self._resolve_dir(sparse_depth_dir)
-        self.dense_depth_dir = self._resolve_dir(dense_depth_dir)
-        self.semantic_2d_dir = self._resolve_dir(semantic_2d_dir)
+        # 解析监督数据目录（支持相对路径和绝对路径，多 data_root 分别解析）
+        self.sparse_depth_dir = sparse_depth_dir
+        self.dense_depth_dir = dense_depth_dir
+        self.semantic_2d_dir = semantic_2d_dir
+        self.supervision_dirs_by_root = {}
+        for root_idx, root_record in enumerate(self.root_records):
+            data_root = root_record['data_root']
+            self.supervision_dirs_by_root[root_idx] = dict(
+                sparse_depth_dir=self._resolve_dir_for_root(self.sparse_depth_dir, data_root),
+                dense_depth_dir=self._resolve_dir_for_root(self.dense_depth_dir, data_root),
+                semantic_2d_dir=self._resolve_dir_for_root(self.semantic_2d_dir, data_root),
+            )
 
-    def _resolve_dir(self, dir_path: str) -> Optional[str]:
+    def _resolve_dir_for_root(self, dir_path: str, data_root: str) -> Optional[str]:
         """将相对路径转换为绝对路径，目录不存在时返回 None 并打印警告。"""
         if dir_path is None:
             return None
         if not os.path.isabs(dir_path):
-            dir_path = os.path.join(self.data_root, dir_path)
+            dir_path = os.path.join(data_root, dir_path)
         if not os.path.isdir(dir_path):
             print(
                 f"[LTDatasetRender] 警告：目录不存在，相关监督将使用零填充：{dir_path}"
@@ -176,6 +190,11 @@ class LTDatasetRender(LTDataset):
         sample = super().__getitem__(index)
 
         info = self.data_infos[index]
+        root_index = info['root_index']
+        root_record = self.root_records[root_index]
+        cams = root_record['cams']
+        calibs = root_record['calibs']
+        supervision_dirs = self.supervision_dirs_by_root[root_index]
         lidar_ts_ns = info['lidar_timestamp_ns']
         target_h, target_w = self.target_size
 
@@ -183,27 +202,27 @@ class LTDatasetRender(LTDataset):
         dense_depth_list: List[torch.Tensor] = []
         semantic_gt_list: List[torch.Tensor] = []
 
-        for cam in self.cams:
+        for cam in cams:
             # 原始图像尺寸（用于正确缩放）
-            orig_h = self.calibs[cam]['orig_H']
-            orig_w = self.calibs[cam]['orig_W']
+            orig_h = calibs[cam]['orig_H']
+            orig_w = calibs[cam]['orig_W']
 
             # ----- 稀疏深度（LiDAR 投影） -----
-            sp_path = self._npy_path(self.sparse_depth_dir, lidar_ts_ns, cam)
+            sp_path = self._npy_path(supervision_dirs['sparse_depth_dir'], lidar_ts_ns, cam)
             sparse_depth = self._load_depth_map(
                 sp_path, target_h, target_w, orig_h, orig_w
             )  # [1, H, W]
             sparse_depth_list.append(sparse_depth)
 
             # ----- 稠密伪深度 -----
-            dn_path = self._npy_path(self.dense_depth_dir, lidar_ts_ns, cam)
+            dn_path = self._npy_path(supervision_dirs['dense_depth_dir'], lidar_ts_ns, cam)
             dense_depth = self._load_depth_map(
                 dn_path, target_h, target_w, orig_h, orig_w
             )  # [1, H, W]
             dense_depth_list.append(dense_depth)
 
             # ----- 2D 语义标签 -----
-            sem_path = self._npy_path(self.semantic_2d_dir, lidar_ts_ns, cam)
+            sem_path = self._npy_path(supervision_dirs['semantic_2d_dir'], lidar_ts_ns, cam)
             semantic_map = self._load_semantic_map(
                 sem_path, target_h, target_w, orig_h, orig_w
             )  # [H, W]
